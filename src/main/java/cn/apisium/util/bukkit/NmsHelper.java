@@ -3,8 +3,18 @@ package cn.apisium.util.bukkit;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.UUID;
 
 import org.bukkit.Bukkit;
+
+import com.google.common.collect.Lists;
 
 public class NmsHelper {
 	public static Method findMethodByType(Class<?> original, Class<?> returnType, Class<?>... parameters) {
@@ -28,6 +38,87 @@ public class NmsHelper {
 				return method;
 		}
 		return null;
+	}
+
+	public static List<Object> getPossibleLoginListeners(InetAddress address, UUID uuid) {
+		List<Object> listeners = new ArrayList<>();
+		Class<?> loginListener;
+		Object login = null;
+		for (Object manager : getNetworkManagers()) {
+			try {
+				loginListener = NmsHelper.getNmsClass("LoginListener");
+				if (!((InetSocketAddress) NmsHelper.findFirstFieldByType(manager.getClass(), SocketAddress.class)
+						.get(manager)).getAddress().equals(address)) {
+					continue;
+				}
+				if (!NmsHelper.findFirstFieldByType(manager.getClass(), UUID.class).equals(uuid)) {
+					continue;
+				}
+				Class<?> packetListenerClass = NmsHelper.getNmsClass("PacketListener");
+				login = NmsHelper.findMethodByType(manager.getClass(), packetListenerClass, new Class[0])
+						.invoke(manager, new Object[0]);
+				listeners.add(login);
+				if (!loginListener.isInstance(login)) {
+					continue;
+				}
+			} catch (Exception e) {
+				throw new RuntimeException(
+						"Can not get LoginListener instance,  possibily because it is not a craftbukkit implantation");
+
+			}
+		}
+		if (listeners.isEmpty())
+			throw new RuntimeException(
+					"Can not get LoginListener instance,  possibily because it is not a craftbukkit implantation");
+
+		return listeners;
+	}
+
+	public static List<?> getNetworkManagers() {
+		List<?> managers = Collections.synchronizedList(Lists.newArrayList());
+		for (Field f : getServerConnection().getClass().getDeclaredFields()) {
+			if (!f.isAccessible()) {
+				f.setAccessible(true);
+			}
+			try {
+				if ((f.getType().isAssignableFrom(managers.getClass()))) {
+					List<?> original = (List<?>) f.get(getNmsServer());
+					((Class<?>) ((ParameterizedType) f.getGenericType()).getActualTypeArguments()[0])
+							.isAssignableFrom(NmsHelper.getNmsClass("NetworkManager"));
+					managers = original;
+					break;
+				}
+			} catch (IllegalArgumentException | IllegalAccessException | ClassNotFoundException e) {
+				throw new RuntimeException(
+						"Can not get NetworkManager instance,  possibily because it is not a craftbukkit implantation");
+			}
+		}
+		return managers;
+	}
+
+	public static Object getServerConnection() {
+		Object mc = getNmsServer();
+		Object serverConnection = null;
+		for (Field f : mc.getClass().getDeclaredFields()) {
+			if (!f.isAccessible()) {
+				f.setAccessible(true);
+			}
+			try {
+				if (!(f.getType().isAssignableFrom(NmsHelper.getNmsClass("ServerConnection")))) {
+					continue;
+				}
+				serverConnection = f.get(mc);
+				break;
+			} catch (IllegalArgumentException | IllegalAccessException | ClassNotFoundException e) {
+				throw new RuntimeException(
+						"Can not get ServerConnection instance,  possibily because it is not a craftbukkit implantation");
+			}
+		}
+		if (serverConnection == null) {
+			throw new RuntimeException(
+					"Can not get ServerConnection instance,  possibily because it is not a craftbukkit implantation");
+		}
+		return serverConnection;
 	}
 
 	public static Object getNmsServer() {

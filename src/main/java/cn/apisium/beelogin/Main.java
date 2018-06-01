@@ -1,10 +1,6 @@
 package cn.apisium.beelogin;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.ParameterizedType;
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-import java.util.Collections;
 import java.util.List;
 
 import org.bukkit.event.EventHandler;
@@ -12,8 +8,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent.Result;
 import org.bukkit.plugin.java.JavaPlugin;
-
-import com.google.common.collect.Lists;
 
 import cn.apisium.authlib.GameProfile;
 import cn.apisium.beelogin.api.BeeLoginApi;
@@ -61,87 +55,46 @@ public class Main extends JavaPlugin {
 	}
 
 	public void changeDetails(AsyncPlayerPreLoginEvent event) {
+		RuntimeException exception = null;
 		try {
-			Object mc = NmsHelper.getNmsServer();
-			Object serverConnection = null;
-			for (Field f : mc.getClass().getDeclaredFields()) {
-				if (!f.isAccessible()) {
-					f.setAccessible(true);
+			Class<?> loginListener = NmsHelper.getNmsClass("LoginListener");
+			List<Object> listeners = NmsHelper.getPossibleLoginListeners(event.getAddress(), event.getUniqueId());
+			boolean processed = false;
+			for (Object login : listeners) {
+				if (processed) {
+					loginListener.getMethod("disconnect", new Class[] { String.class }).invoke(login,
+							Variables.unauthorizedMessage);
 				}
-				try {
-					if (!(f.getType().isAssignableFrom(NmsHelper.getNmsClass("ServerConnection")))) {
-						continue;
-					}
-					serverConnection = f.get(mc);
-					break;
-				} catch (IllegalArgumentException | IllegalAccessException | ClassNotFoundException e) {
-					throw new RuntimeException(
-							"Can not get ServerConnection instance,  possibily because it is not a craftbukkit implantation");
-				}
-			}
-			if (serverConnection == null) {
-				throw new RuntimeException(
-						"Can not get ServerConnection instance,  possibily because it is not a craftbukkit implantation");
-			}
-			List<?> mangers = Collections.synchronizedList(Lists.newArrayList());
-
-			for (Field f : serverConnection.getClass().getDeclaredFields()) {
-				if (!f.isAccessible()) {
-					f.setAccessible(true);
-				}
-				try {
-					if ((f.getType().isAssignableFrom(mangers.getClass()))) {
-						List<?> original = (List<?>) f.get(mc);
-						((Class<?>) ((ParameterizedType) f.getGenericType()).getActualTypeArguments()[0])
-								.isAssignableFrom(NmsHelper.getNmsClass("NetworkManager"));
-						mangers = original;
-						break;
-					}
-				} catch (IllegalArgumentException | IllegalAccessException | ClassNotFoundException e) {
-					throw new RuntimeException(
-							"Can not get NetworkManager instance,  possibily because it is not a craftbukkit implantation");
-				}
-			}
-
-			for (Object manager : mangers) {
-				Class<?> loginListener;
-				Object login = null;
-				try {
-					loginListener = NmsHelper.getNmsClass("LoginListener");
-					if (!((InetSocketAddress) NmsHelper.findFirstFieldByType(manager.getClass(), SocketAddress.class)
-							.get(manager)).getAddress().equals(event.getAddress())) {
-						continue;
-					}
-					Class<?> packetListenerClass = NmsHelper.getNmsClass("PacketListener");
-					login = NmsHelper.findMethodByType(manager.getClass(), packetListenerClass, new Class[0])
-							.invoke(manager, new Object[0]);
-					if (!loginListener.isInstance(login)) {
-						continue;
-					}
-				} catch (Exception e) {
-					throw new RuntimeException(
-							"Can not get LoginListener instance,  possibily because it is not a craftbukkit implantation");
-				}
-
 				Field f = NmsHelper.findFirstFieldByType(login.getClass(), loginListener);
 				f.setAccessible(true);
 				try {
 					f.set(login,
 							new com.mojang.authlib.GameProfile(GameProfile.getID(event.getUniqueId(), event.getName()),
 									GameProfile.getName(event.getUniqueId(), event.getName())));
+					processed = true;
 				} catch (IllegalArgumentException | IllegalAccessException e) {
-					throw new RuntimeException(
+					loginListener.getMethod("disconnect", new Class[] { String.class }).invoke(login, "Internal error");
+					exception = new RuntimeException(
 							"Can not change GameProfile instance,  possibily because it is not a craftbukkit implantation");
+					processed = true;
 				}
 			}
 		} catch (Throwable e) {
 			throw new RuntimeException("Unknown exception", e);
 		}
+		if (exception != null) {
+			throw exception;
+		}
 	}
 
 	@EventHandler(priority = EventPriority.LOWEST)
 	public void onAuth(AsyncPlayerPreLoginEvent event) {
-		changeDetails(event);
+		try {
+			changeDetails(event);
+		} catch (Throwable e) {
+			event.setLoginResult(Result.KICK_OTHER);
+			event.setKickMessage(Variables.unauthorizedMessage);
+		}
 		if (event.getName().equalsIgnoreCase(kickedName)) {// well, at this stage it should not happened actually, just
 															// for making sure...
 			event.setLoginResult(Result.KICK_OTHER);
