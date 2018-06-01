@@ -3,10 +3,10 @@ package cn.apisium.beelogin;
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.Collections;
 import java.util.List;
 
-import org.bukkit.craftbukkit.v1_12_R1.CraftServer;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
@@ -19,11 +19,7 @@ import cn.apisium.authlib.GameProfile;
 import cn.apisium.beelogin.api.BeeLoginApi;
 import cn.apisium.beelogin.variable.NonConfig;
 import cn.apisium.beelogin.variable.Variables;
-import net.minecraft.server.v1_12_R1.LoginListener;
-import net.minecraft.server.v1_12_R1.MinecraftServer;
-import net.minecraft.server.v1_12_R1.NetworkManager;
-import net.minecraft.server.v1_12_R1.PacketListener;
-import net.minecraft.server.v1_12_R1.ServerConnection;
+import cn.apisium.util.bukkit.NmsHelper;
 
 public class Main extends JavaPlugin {
 	public static final String tokenPerfix = "$A(";
@@ -64,68 +60,88 @@ public class Main extends JavaPlugin {
 		return String.valueOf(cs);
 	}
 
-	@SuppressWarnings("unchecked")
+	public void changeDetails(AsyncPlayerPreLoginEvent event) {
+		try {
+			Object mc = NmsHelper.getNmsServer();
+			Object serverConnection = null;
+			for (Field f : mc.getClass().getDeclaredFields()) {
+				if (!f.isAccessible()) {
+					f.setAccessible(true);
+				}
+				try {
+					if (!(f.getType().isAssignableFrom(NmsHelper.getNmsClass("ServerConnection")))) {
+						continue;
+					}
+					serverConnection = f.get(mc);
+					break;
+				} catch (IllegalArgumentException | IllegalAccessException | ClassNotFoundException e) {
+					throw new RuntimeException(
+							"Can not get ServerConnection instance,  possibily because it is not a craftbukkit implantation");
+				}
+			}
+			if (serverConnection == null) {
+				throw new RuntimeException(
+						"Can not get ServerConnection instance,  possibily because it is not a craftbukkit implantation");
+			}
+			List<?> mangers = Collections.synchronizedList(Lists.newArrayList());
+
+			for (Field f : serverConnection.getClass().getDeclaredFields()) {
+				if (!f.isAccessible()) {
+					f.setAccessible(true);
+				}
+				try {
+					if ((f.getType().isAssignableFrom(mangers.getClass()))) {
+						List<?> original = (List<?>) f.get(mc);
+						((Class<?>) ((ParameterizedType) f.getGenericType()).getActualTypeArguments()[0])
+								.isAssignableFrom(NmsHelper.getNmsClass("NetworkManager"));
+						mangers = original;
+						break;
+					}
+				} catch (IllegalArgumentException | IllegalAccessException | ClassNotFoundException e) {
+					throw new RuntimeException(
+							"Can not get NetworkManager instance,  possibily because it is not a craftbukkit implantation");
+				}
+			}
+
+			for (Object manager : mangers) {
+				Class<?> loginListener;
+				Object login = null;
+				try {
+					loginListener = NmsHelper.getNmsClass("LoginListener");
+					if (!((InetSocketAddress) NmsHelper.findFirstFieldByType(manager.getClass(), SocketAddress.class)
+							.get(manager)).getAddress().equals(event.getAddress())) {
+						continue;
+					}
+					Class<?> packetListenerClass = NmsHelper.getNmsClass("PacketListener");
+					login = NmsHelper.findMethodByType(manager.getClass(), packetListenerClass, new Class[0])
+							.invoke(manager, new Object[0]);
+					if (!loginListener.isInstance(login)) {
+						continue;
+					}
+				} catch (Exception e) {
+					throw new RuntimeException(
+							"Can not get LoginListener instance,  possibily because it is not a craftbukkit implantation");
+				}
+
+				Field f = NmsHelper.findFirstFieldByType(login.getClass(), loginListener);
+				f.setAccessible(true);
+				try {
+					f.set(login,
+							new com.mojang.authlib.GameProfile(GameProfile.getID(event.getUniqueId(), event.getName()),
+									GameProfile.getName(event.getUniqueId(), event.getName())));
+				} catch (IllegalArgumentException | IllegalAccessException e) {
+					throw new RuntimeException(
+							"Can not change GameProfile instance,  possibily because it is not a craftbukkit implantation");
+				}
+			}
+		} catch (Throwable e) {
+			throw new RuntimeException("Unknown exception", e);
+		}
+	}
+
 	@EventHandler(priority = EventPriority.LOWEST)
 	public void onAuth(AsyncPlayerPreLoginEvent event) {
-		MinecraftServer mc = ((CraftServer) (this.getServer())).getServer();
-		Object serverConnection = null;
-		for (Field f : mc.getClass().getDeclaredFields()) {
-			if (!f.isAccessible()) {
-				f.setAccessible(true);
-			}
-			try {
-				if (!(f.getType().isAssignableFrom(ServerConnection.class))) {
-					continue;
-				}
-				serverConnection = f.get(mc);
-				return;
-			} catch (IllegalArgumentException | IllegalAccessException e) {
-				e.printStackTrace();
-			}
-
-		}
-		List<NetworkManager> mangers = Collections.synchronizedList(Lists.newArrayList());
-
-		for (Field f : serverConnection.getClass().getDeclaredFields()) {
-			if (!f.isAccessible()) {
-				f.setAccessible(true);
-			}
-			try {
-				if ((f.getType().isAssignableFrom(mangers.getClass()))) {
-					List<?> original = (List<?>) f.get(mc);
-					((Class<?>) ((ParameterizedType) f.getGenericType()).getActualTypeArguments()[0])
-							.isAssignableFrom(NetworkManager.class);
-					mangers = (List<NetworkManager>) original;
-					return;
-				}
-			} catch (IllegalArgumentException | IllegalAccessException e) {
-				e.printStackTrace();
-			}
-
-		}
-		for (NetworkManager manager : mangers) {
-			if (!((InetSocketAddress) manager.l).getAddress().equals(event.getAddress())) {
-				continue;
-			}
-			PacketListener p = manager.i();
-			if (!(p instanceof LoginListener)) {
-				continue;
-			}
-			LoginListener login = (LoginListener) p;
-			for (Field f : login.getClass().getDeclaredFields()) {
-				if (f.getType().isAssignableFrom(GameProfile.class)) {
-					f.setAccessible(true);
-					try {
-						f.set(login,
-								new com.mojang.authlib.GameProfile(
-										GameProfile.getID(event.getUniqueId(), event.getName()),
-										GameProfile.getName(event.getUniqueId(), event.getName())));
-					} catch (IllegalArgumentException | IllegalAccessException e) {
-						e.printStackTrace();
-					}
-				}
-			}
-		}
+		changeDetails(event);
 		if (event.getName().equalsIgnoreCase(kickedName)) {// well, at this stage it should not happened actually, just
 															// for making sure...
 			event.setLoginResult(Result.KICK_OTHER);
